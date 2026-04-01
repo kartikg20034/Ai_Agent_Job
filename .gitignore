@@ -1,0 +1,49 @@
+# 🔐 Secrets
+.env
+
+# 🐍 Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+
+# 📦 Virtual environments
+venv/
+env/
+.venv/
+
+# 📊 Data files (generated outputs)
+data/jobs.csv
+
+# 🧠 Playwright cache / browsers
+playwright/.cache/
+ms-playwright/
+
+# 🖥️ OS files
+.DS_Store
+Thumbs.db
+
+# 📝 Logs
+*.log
+
+# 🧪 Jupyter (if used)
+.ipynb_checkpoints/
+
+# 🧰 IDEs
+.vscode/
+.idea/
+
+# 🔥 Session storage (IMPORTANT - LinkedIn login)
+session/
+
+# 📁 Temporary files
+tmp/
+temp/
+
+# 🚫 Node (if ever added)
+node_modules/
+
+# 📦 Build / dist
+dist/
+build/
