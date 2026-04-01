@@ -4,3 +4,5 @@ twilio
 openai
 pypdf
 numpy
+python-dotenv
+requests
