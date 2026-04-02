@@ -1,16 +1,31 @@
 def scrape_wellfound(page, keywords, results):
-    page.goto("https://wellfound.com/jobs")
-    page.wait_for_timeout(5000)
+    print("🟣 Wellfound...")
 
-    jobs = page.query_selector_all("div")
+    for keyword in keywords:
+        url = f"https://wellfound.com/jobs?query={keyword}"
+        page.goto(url)
+        page.wait_for_timeout(5000)
 
-    for job in jobs[:20]:
-        try:
-            results.append({
-                "Platform": "Wellfound",
-                "Company": "Startup",
-                "Role": job.inner_text()[:80],
-                "Link": page.url
-            })
-        except:
-            continue
+        for _ in range(3):
+            page.mouse.wheel(0, 4000)
+            page.wait_for_timeout(2000)
+
+        jobs = page.query_selector_all("div[data-testid='job-list-item']")
+
+        for job in jobs[:25]:
+            try:
+                text = job.inner_text()
+
+                # 🎯 entry-level filter
+                if not any(x in text.lower() for x in ["intern", "junior", "0-1", "fresher", "associate"]):
+                    continue
+
+                results.append({
+                    "Platform": "Wellfound",
+                    "Company": text.split("\n")[0],
+                    "Role": text,
+                    "Link": page.url
+                })
+
+            except:
+                continue

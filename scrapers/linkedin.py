@@ -1,35 +1,35 @@
-def scrape_linkedin(page, keywords, locations, results, parse_posted_time):
-    print("🔍 LinkedIn scanning...")
+def scrape_linkedin(page, keywords, locations, results):
+    print("🔵 LinkedIn...")
 
     for keyword in keywords:
         for loc in locations:
-            page.goto(f"https://www.linkedin.com/jobs/search/?keywords={keyword}&location={loc}")
-            page.wait_for_timeout(4000)
+            url = f"https://www.linkedin.com/jobs/search/?keywords={keyword}&location={loc}&f_E=2"
+            page.goto(url)
+            page.wait_for_timeout(5000)
 
-            jobs = page.query_selector_all(".job-card-container")
+            # scroll to load more jobs
+            for _ in range(3):
+                page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(2000)
 
-            for job in jobs[:6]:
+            jobs = page.query_selector_all(".jobs-search-results__list-item")
+
+            for job in jobs[:25]:
                 try:
-                    job.click()
-                    page.wait_for_timeout(2000)
+                    title = job.query_selector("h3").inner_text()
+                    company = job.query_selector("h4").inner_text()
+                    link = job.query_selector("a").get_attribute("href")
 
-                    title = page.query_selector("h2").inner_text()
-                    company = page.query_selector(".job-details-jobs-unified-top-card__company-name").inner_text()
-                    link = page.url
+                    # 🎯 filter entry-level
+                    if not any(x in title.lower() for x in ["intern", "junior", "associate", "engineer i", "sde 1"]):
+                        continue
 
-                    posted = page.query_selector("span.tvm__text")
-                    posted_text = posted.inner_text() if posted else "unknown"
-                    days = parse_posted_time(posted_text)
-
-                    if days <= 3:
-                        results.append({
-                            "Platform": "LinkedIn",
-                            "Company": company,
-                            "Role": title,
-                            "Posted": posted_text,
-                            "Days_Ago": days,
-                            "Link": link
-                        })
+                    results.append({
+                        "Platform": "LinkedIn",
+                        "Company": company,
+                        "Role": title,
+                        "Link": link
+                    })
 
                 except:
                     continue
