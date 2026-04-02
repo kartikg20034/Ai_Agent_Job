@@ -6,3 +6,4 @@ pypdf
 numpy
 python-dotenv
 requests
+beautifulsoup4
