@@ -2,6 +2,7 @@ import pandas as pd
 from twilio.rest import Client
 import traceback
 import re
+import time  # ✅ built-in
 
 from config import *
 from ai_utils import *
@@ -17,35 +18,56 @@ from scrapers.yc_jobs import scrape_yc
 client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 
-# ---------------- SAFE RUN ----------------
+# ---------------- SAFE RUN (WITH TIMING) ----------------
 def safe_run(func, name):
     results = []
+    start = time.time()
 
     try:
-        print(f"▶️ Running {name}")
+        print(f"\n▶️ Running {name}...")
+
         func(results)
 
-        if not results:
-            return {"status": "EMPTY", "data": None}
+        duration = round(time.time() - start, 2)
 
-        return {"status": "SUCCESS", "data": results}
+        print(f"⏱ {name}: {duration}s")
+        print(f"📦 {name} raw jobs: {len(results)}")
+
+        if not results:
+            return {"status": "EMPTY", "data": None, "time": duration, "count": 0}
+
+        return {
+            "status": "SUCCESS",
+            "data": results,
+            "time": duration,
+            "count": len(results)
+        }
 
     except Exception:
-        print(f"❌ {name} crashed")
+        duration = round(time.time() - start, 2)
+        print(f"❌ {name} crashed after {duration}s")
         traceback.print_exc()
-        return {"status": "FAILED", "data": None}
+
+        return {"status": "FAILED", "data": None, "time": duration, "count": 0}
 
 
 # ---------------- FILTERS ----------------
 
+def is_not_senior(text):
+    text = str(text).lower()
+    senior = ["senior", "lead", "manager", "principal", "staff", "architect"]
+    return not any(k in text for k in senior)
+
+
 def is_relevant(text):
-    skills = ["python", "java", "backend", "ai", "ml", "spring"]
+    skills = ["python", "java", "developer", "engineer", "backend", "ai"]
     return any(s in str(text).lower() for s in skills)
 
 
-def is_entry_level(text):
-    keywords = ["intern", "fresher", "junior", "entry", "associate", "0-1"]
-    return any(k in str(text).lower() for k in keywords)
+def fresher_bonus(text):
+    text = str(text).lower()
+    fresher = ["intern", "junior", "fresher", "entry", "graduate", "trainee"]
+    return 0.3 if any(k in text for k in fresher) else 0
 
 
 def extract_salary_value(text):
@@ -62,13 +84,12 @@ def extract_salary_value(text):
     return 0
 
 
-# ---------------- PROCESS SOURCE ----------------
+# ---------------- PROCESS ----------------
 
-def process_source(results, resume_embedding, name):
+def process_source(results, emb, name):
     try:
         df = pd.DataFrame(results)
 
-        # ❌ bad structure
         if df.empty or "Role" not in df.columns:
             return {"status": "BAD_DATA", "df": None}
 
@@ -77,24 +98,31 @@ def process_source(results, resume_embedding, name):
         if df.empty:
             return {"status": "BAD_DATA", "df": None}
 
-        # 🧠 scoring
-        df["Score"] = df["Role"].apply(lambda x: ai_match_score(resume_embedding, x))
+        # AI score
+        df["Score"] = df["Role"].apply(lambda x: ai_match_score(emb, x))
 
-        # 🎯 filters
+        # remove senior
+        df = df[df["Role"].apply(is_not_senior)]
+
+        # basic relevance
         df = df[df["Role"].apply(is_relevant)]
-        df = df[df["Role"].apply(is_entry_level)]
 
         if df.empty:
             return {"status": "FILTERED_OUT", "df": None}
 
-        # 💰 salary
+        # salary (optional)
         df["Salary"] = df["Role"].apply(extract_salary_value)
-        df = df[(df["Salary"] >= 20000) | (df["Salary"] == 0)]
 
+        # boost fresher
+        df["Score"] += df["Role"].apply(fresher_bonus)
+
+        df = df.sort_values(by="Score", ascending=False)
+
+        # fallback if too strict
         if df.empty:
-            return {"status": "FILTERED_OUT", "df": None}
+            df = pd.DataFrame(results).head(10)
 
-        df = df.sort_values(by="Score", ascending=False).head(20)
+        df = df.head(20)
 
         return {"status": "SUCCESS", "df": df}
 
@@ -125,68 +153,61 @@ def run():
     for func, name in sources:
         run_result = safe_run(func, name)
 
-        if run_result["status"] == "FAILED":
-            report[name] = "❌ FAILED"
-            continue
+        report[name] = {
+            "status": run_result["status"],
+            "time": run_result["time"],
+            "raw": run_result["count"],
+            "final": 0
+        }
 
-        if run_result["status"] == "EMPTY":
-            report[name] = "⚠️ NO JOBS"
+        if run_result["status"] != "SUCCESS":
             continue
 
         process_result = process_source(run_result["data"], emb, name)
-        status = process_result["status"]
 
-        if status == "SUCCESS":
+        if process_result["status"] == "SUCCESS":
             df = process_result["df"]
             final_dfs.append(df)
-            report[name] = f"✅ {len(df)} jobs"
-
-        elif status == "BAD_DATA":
-            report[name] = "⚠️ BAD DATA"
-
-        elif status == "FILTERED_OUT":
-            report[name] = "⚠️ FILTERED OUT"
-
+            report[name]["final"] = len(df)
         else:
-            report[name] = "❌ FAILED"
+            report[name]["status"] = process_result["status"]
 
     # ---------------- REPORT ----------------
     print("\n📊 SCRAPER REPORT:")
-    for k, v in report.items():
-        print(f"{k}: {v}")
+    for name, info in report.items():
+        print(
+            f"{name}: {info['status']} | "
+            f"⏱ {info['time']}s | "
+            f"📦 raw: {info['raw']} | "
+            f"✅ final: {info['final']}"
+        )
 
     if not final_dfs:
-        print("❌ No valid jobs from any source")
+        print("❌ No jobs found")
         return
 
-    # ---------------- FINAL DATA ----------------
     final_df = pd.concat(final_dfs, ignore_index=True)
     final_df = final_df.sort_values(by="Score", ascending=False)
 
     final_df.to_csv("data/jobs.csv", index=False)
 
-    print(f"\n✅ Final jobs collected: {len(final_df)}")
+    print(f"\n✅ Final jobs: {len(final_df)}")
 
     # ---------------- WHATSAPP ----------------
-    message = "🔥 Top Jobs:\n\n"
+    msg = "🔥 Top Fresher Jobs:\n\n"
 
-    for _, job in final_df.head(20).iterrows():
-        message += f"{job['Company']} - {job['Role']}\n"
-        message += f"{job['Link']}\n\n"
-
-    message += "\n📊 Report:\n"
-    for k, v in report.items():
-        message += f"{k}: {v}\n"
+    for _, j in final_df.head(20).iterrows():
+        msg += f"{j['Company']} - {j['Role']}\n{j['Link']}\n\n"
 
     try:
         client.messages.create(
             from_=FROM_WHATSAPP,
-            body=message[:1500],
+            body=msg[:1500],
             to=TO_WHATSAPP
         )
         print("📩 WhatsApp sent!")
-    except Exception:
-        print("⚠️ WhatsApp failed (ignored)")
+    except:
+        print("⚠️ WhatsApp failed")
 
 
 if __name__ == "__main__":
