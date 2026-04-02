@@ -18,23 +18,33 @@ client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 
 # ---------------- SAFE RUN ----------------
-def safe_run(func, *args):
+def safe_run(func, name):
+    results = []
+
     try:
-        print(f"▶️ Running {func.__name__}")
-        func(*args)
+        print(f"▶️ Running {name}")
+        func(results)
+
+        if not results:
+            return {"status": "EMPTY", "data": None}
+
+        return {"status": "SUCCESS", "data": results}
+
     except Exception:
-        print(f"❌ Failed: {func.__name__}")
+        print(f"❌ {name} crashed")
         traceback.print_exc()
+        return {"status": "FAILED", "data": None}
 
 
 # ---------------- FILTERS ----------------
+
 def is_relevant(text):
     skills = ["python", "java", "backend", "ai", "ml", "spring"]
     return any(s in str(text).lower() for s in skills)
 
 
 def is_entry_level(text):
-    keywords = ["intern", "fresher", "junior", "entry", "0-1", "associate"]
+    keywords = ["intern", "fresher", "junior", "entry", "associate", "0-1"]
     return any(k in str(text).lower() for k in keywords)
 
 
@@ -52,74 +62,131 @@ def extract_salary_value(text):
     return 0
 
 
+# ---------------- PROCESS SOURCE ----------------
+
 def process_source(results, resume_embedding, name):
-    if not results:
-        return pd.DataFrame()
+    try:
+        df = pd.DataFrame(results)
 
-    df = pd.DataFrame(results)
+        # ❌ bad structure
+        if df.empty or "Role" not in df.columns:
+            return {"status": "BAD_DATA", "df": None}
 
-    if "Role" not in df.columns:
-        return pd.DataFrame()
+        df = df[df["Role"].notna()]
 
-    df["Score"] = df["Role"].apply(lambda x: ai_match_score(resume_embedding, x))
+        if df.empty:
+            return {"status": "BAD_DATA", "df": None}
 
-    df = df[df["Role"].apply(is_relevant)]
-    df = df[df["Role"].apply(is_entry_level)]
+        # 🧠 scoring
+        df["Score"] = df["Role"].apply(lambda x: ai_match_score(resume_embedding, x))
 
-    df["Salary"] = df["Role"].apply(extract_salary_value)
+        # 🎯 filters
+        df = df[df["Role"].apply(is_relevant)]
+        df = df[df["Role"].apply(is_entry_level)]
 
-    df = df[(df["Salary"] >= 20000) | (df["Salary"] == 0)]
+        if df.empty:
+            return {"status": "FILTERED_OUT", "df": None}
 
-    df = df.sort_values(by="Score", ascending=False).head(20)
+        # 💰 salary
+        df["Salary"] = df["Role"].apply(extract_salary_value)
+        df = df[(df["Salary"] >= 20000) | (df["Salary"] == 0)]
 
-    print(f"✅ {name}: {len(df)} jobs")
+        if df.empty:
+            return {"status": "FILTERED_OUT", "df": None}
 
-    return df
+        df = df.sort_values(by="Score", ascending=False).head(20)
+
+        return {"status": "SUCCESS", "df": df}
+
+    except Exception:
+        return {"status": "FAILED", "df": None}
 
 
 # ---------------- MAIN ----------------
+
 def run():
     print("🚀 Cloud Job Agent...")
 
     resume = load_resume_text(RESUME_PATH)
     emb = get_embedding(resume)
 
-    final = []
+    final_dfs = []
+    report = {}
 
-    for func, name in [
+    sources = [
         (scrape_internshala, "Internshala"),
         (scrape_letsintern, "LetsIntern"),
         (scrape_adzuna, "Adzuna"),
         (scrape_remotive, "Remotive"),
         (scrape_remoteok, "RemoteOK"),
         (scrape_yc, "YC")
-    ]:
-        res = []
-        safe_run(func, res)
-        df = process_source(res, emb, name)
-        if not df.empty:
-            final.append(df)
+    ]
 
-    final_df = pd.concat(final, ignore_index=True)
+    for func, name in sources:
+        run_result = safe_run(func, name)
+
+        if run_result["status"] == "FAILED":
+            report[name] = "❌ FAILED"
+            continue
+
+        if run_result["status"] == "EMPTY":
+            report[name] = "⚠️ NO JOBS"
+            continue
+
+        process_result = process_source(run_result["data"], emb, name)
+        status = process_result["status"]
+
+        if status == "SUCCESS":
+            df = process_result["df"]
+            final_dfs.append(df)
+            report[name] = f"✅ {len(df)} jobs"
+
+        elif status == "BAD_DATA":
+            report[name] = "⚠️ BAD DATA"
+
+        elif status == "FILTERED_OUT":
+            report[name] = "⚠️ FILTERED OUT"
+
+        else:
+            report[name] = "❌ FAILED"
+
+    # ---------------- REPORT ----------------
+    print("\n📊 SCRAPER REPORT:")
+    for k, v in report.items():
+        print(f"{k}: {v}")
+
+    if not final_dfs:
+        print("❌ No valid jobs from any source")
+        return
+
+    # ---------------- FINAL DATA ----------------
+    final_df = pd.concat(final_dfs, ignore_index=True)
+    final_df = final_df.sort_values(by="Score", ascending=False)
+
     final_df.to_csv("data/jobs.csv", index=False)
 
-    print("📊 Total:", len(final_df))
+    print(f"\n✅ Final jobs collected: {len(final_df)}")
 
-    # WhatsApp
-    msg = "🔥 Top Jobs:\n\n"
+    # ---------------- WHATSAPP ----------------
+    message = "🔥 Top Jobs:\n\n"
 
-    for _, j in final_df.head(20).iterrows():
-        msg += f"{j['Company']} - {j['Role']}\n{j['Link']}\n\n"
+    for _, job in final_df.head(20).iterrows():
+        message += f"{job['Company']} - {job['Role']}\n"
+        message += f"{job['Link']}\n\n"
+
+    message += "\n📊 Report:\n"
+    for k, v in report.items():
+        message += f"{k}: {v}\n"
 
     try:
         client.messages.create(
             from_=FROM_WHATSAPP,
-            body=msg[:1500],
+            body=message[:1500],
             to=TO_WHATSAPP
         )
-        print("📩 Sent")
-    except:
-        print("⚠️ WhatsApp failed")
+        print("📩 WhatsApp sent!")
+    except Exception:
+        print("⚠️ WhatsApp failed (ignored)")
 
 
 if __name__ == "__main__":
